@@ -81,10 +81,12 @@ Whisper.cpp is needed for audio transcription. Here's how to build it:
 
 2. Configure and build with CMake:
    ```bash
-   mkdir build
-   cd build
-   cmake ..
-   cmake --build . --config Release
+   ## if you dont have gpu
+   cmake -B build
+   cmake --build build --config Release
+   ## if you have nvidia gpu
+   cmake -B build -DGGML_CUDA=1
+   cmake --build build --config Release
    ```
 
 3. Download a Whisper model:
