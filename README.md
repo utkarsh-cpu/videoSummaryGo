@@ -14,13 +14,22 @@ VideoSummaryGo extracts valuable information from videos by transcribing audio a
 - PDF conversion support
 - Handling of large files through splitting
 
+## Version History
+
+- first commit: basic code
+- second commit: added tesseract support incase LLM is rejecting your video file input
+
+
+
 ## Prerequisites
 
-Before using VideoSummaryGo, ensure you have the following installed:
+Before using VideoSummaryGo, ensure you have the following installed or have:
 
 - Go (version 1.15 or higher recommended)
 - FFmpeg (for audio and video processing)
 - Whisper.cpp (for audio transcription)
+- tesseract-ocr (for backup video transcription)
+- Google Gemini API Key (for main video transcription)
 - Dependencies listed in `go.mod`
 
 
@@ -82,6 +91,146 @@ Install using Homebrew:
 ```bash
 brew install ffmpeg
 ```
+
+### Installing tesseract
+Okay, here's a breakdown of how to download and install Tesseract OCR for various operating systems, along with explanations and important considerations:
+
+**Understanding Tesseract**
+
+*   **Tesseract OCR Engine:** This is the core software that performs the Optical Character Recognition (converting images of text into machine-readable text).  You *always* need this.
+*   **Language Data:** Tesseract needs language-specific data files (traineddata) to recognize text in a particular language (e.g., English, Spanish, Chinese).  You need to download the data files for the languages you intend to use.
+*   **Front-ends/Wrappers (Optional but often useful):**  Tesseract itself is a command-line tool.  While you can use it directly from the command line, many users prefer graphical user interfaces (GUIs) or programming language wrappers (like `pytesseract` in Python) to make it easier to work with.
+
+**Downloads and Installation Instructions**
+
+**1. Windows**
+
+*   **Recommended Installer (Easiest):** The easiest way to install Tesseract on Windows is to use a pre-built installer.  The most reliable and up-to-date installers are usually maintained by the community. Here's the preferred method:
+
+    *   **UB-Mannheim Installer:**
+        1.  **Go to the UB-Mannheim Tesseract page:** [https://github.com/UB-Mannheim/tesseract/wiki](https://github.com/UB-Mannheim/tesseract/wiki)
+        2.  **Download the Installer:** Look for a link to the latest `.exe` installer file (e.g., `tesseract-ocr-w64-setup-v5.x.x.xxxxxxxx.exe`).  Choose the 64-bit version (w64) if you have a 64-bit system (most modern systems are).
+        3.  **Run the Installer:** Double-click the downloaded `.exe` file.
+        4.  **Important Installation Steps:**
+            *   **Choose Components:**  During installation, make sure to select the language data you need.  "English" is usually selected by default.  You can select additional languages in the "Additional language data" section.  It's *much* easier to install language data during the initial installation than to add it later.
+            *   **Add to PATH (Crucial):**  Make sure the installer adds Tesseract to your system's PATH environment variable.  There's usually a checkbox for this.  This allows you to run Tesseract from any command prompt or terminal window. If the installer doesn't do this automatically, you'll need to do it manually (see instructions below).
+        5. **Verify Installation:**  Open a command prompt (search for "cmd" in the Start Menu) and type:  `tesseract --version`.  You should see the Tesseract version information.  If you get an error like "'tesseract' is not recognized...", the PATH wasn't set correctly.
+
+    *   **Manually Adding to PATH (if needed):**
+        1.  **Find the Tesseract Installation Directory:** This is usually something like `C:\Program Files\Tesseract-OCR`.
+        2.  **Open System Properties:**  Search for "environment variables" in the Start Menu and select "Edit the system environment variables."
+        3.  **Edit the PATH Variable:** In the "System Properties" window, click "Environment Variables...".  In the "System variables" section, find the "Path" variable, select it, and click "Edit...".
+        4.  **Add the Tesseract Directory:**  Click "New" and add the full path to the Tesseract installation directory (e.g., `C:\Program Files\Tesseract-OCR`).  Click "OK" on all the windows to save the changes.  You might need to restart your computer or open a new command prompt for the changes to take effect.
+
+* **Chocolatey (Package Manager - For advanced users):**
+    If you use Chocolatey, you can install with:
+    ```
+    choco install tesseract
+    ```
+    You will still need to ensure language data is installed. You can install individual language packs (e.g., `choco install tesseract-lang-eng` for English).
+
+**2. macOS**
+
+*   **Homebrew (Recommended):** Homebrew is the most convenient package manager for macOS.
+
+    1.  **Install Homebrew (if you don't have it):** Open Terminal and paste this command:
+        ```bash
+        /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+        ```
+        Follow the on-screen instructions.
+
+    2.  **Install Tesseract:**
+        ```bash
+        brew install tesseract
+        ```
+
+    3.  **Install Language Data:** Homebrew installs English by default. To install other languages, use `brew install tesseract-lang`:
+        ```bash
+        brew install tesseract-lang
+        ```
+        This command will install ALL available languages. It can take up a lot of space. To install *specific* languages, find the language code (e.g., `spa` for Spanish, `fra` for French, `deu` for German) from the Tesseract documentation or by searching online, and then use:
+        ```bash
+        brew install tesseract-lang-spa  # For Spanish
+        brew install tesseract-lang-fra  # For French
+        brew install tesseract-lang-deu  # For German
+        ```
+        You can install multiple languages at once:
+        ```bash
+        brew install tesseract-lang-spa tesseract-lang-fra
+        ```
+
+    4. **Verify Installation:**
+        ```bash
+        tesseract --version
+        ```
+
+*   **MacPorts (Alternative Package Manager):**  If you prefer MacPorts:
+
+    ```bash
+    sudo port install tesseract
+    sudo port install tesseract-<langcode>  # e.g., tesseract-eng, tesseract-spa
+    ```
+
+**3. Linux (Various Distributions)**
+
+Linux distributions usually have Tesseract in their package repositories.  The specific command depends on your distribution:
+
+*   **Debian/Ubuntu (and derivatives like Linux Mint, Pop!_OS):**
+
+    ```bash
+    sudo apt update
+    sudo apt install tesseract-ocr
+    sudo apt install tesseract-ocr-eng  # For English (usually installed by default)
+    sudo apt install tesseract-ocr-spa  # For Spanish
+    sudo apt install tesseract-ocr-<langcode> # For other languages
+    ```
+
+*   **Fedora/Red Hat/CentOS:**
+
+    ```bash
+    sudo dnf install tesseract
+    sudo dnf install tesseract-langpack-eng  # For English
+    sudo dnf install tesseract-langpack-spa  # For Spanish
+    sudo dnf install tesseract-langpack-<langcode> # For other languages
+    ```
+
+*   **Arch Linux (and derivatives like Manjaro):**
+
+    ```bash
+    sudo pacman -S tesseract
+    sudo pacman -S tesseract-data-eng  # For English
+    sudo pacman -S tesseract-data-spa  # For Spanish
+    sudo pacman -S tesseract-data-<langcode> # For other languages
+    ```
+
+*   **openSUSE:**
+
+    ```bash
+    sudo zypper install tesseract
+    sudo zypper install tesseract-ocr-traineddata-english # For English
+    sudo zypper install tesseract-ocr-traineddata-spanish # For Spanish
+    sudo zypper install tesseract-ocr-traineddata-<langcode> # See note below
+    ```
+    *Note*:  For openSUSE, the naming convention for language packs might be slightly different. You can search for available language packs using `zypper search tesseract-ocr-traineddata`.
+
+*   **Alpine Linux:**
+    ```bash
+    apk add tesseract tesseract-ocr-data-eng
+    ```
+    Replace `eng` with your required language code.
+
+**4. Using Tesseract from the Command Line (Basic Example)**
+
+Once you have Tesseract installed and the language data you need, you can use it from the command line like this:
+
+```bash
+tesseract imagename.png output.txt -l eng
+```
+
+*   `imagename.png`:  Replace this with the path to your image file (e.g., `images/my_scan.jpg`).  Tesseract supports various image formats (PNG, JPEG, TIFF, etc.).
+*   `output.txt`:  This is the name of the text file where Tesseract will write the extracted text.
+*   `-l eng`:  This specifies the language (English in this case).  Use the appropriate language code (e.g., `-l spa` for Spanish, `-l fra` for French).  You can specify multiple languages by separating them with a plus sign (e.g., `-l eng+spa`).
+
 
 ### Building Whisper.cpp with CMake
 
