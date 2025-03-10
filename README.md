@@ -16,8 +16,8 @@ VideoSummaryGo extracts valuable information from videos by transcribing audio a
 
 ## Version History
 
-- first commit: basic code
-- second commit: added tesseract support incase LLM is rejecting your video file input
+- **beta-v1**:***first commit***: basic code
+- **beta-v2** ***second commit***: added tesseract support incase LLM is rejecting your video file input
 
 
 
