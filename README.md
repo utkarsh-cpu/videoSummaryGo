@@ -169,6 +169,7 @@ Convert your generated summary to PDF format:
 ## Troubleshooting
 
 - **ffmpeg errors**: Ensure ffmpeg is correctly installed and in your system PATH
+- **gemini**: Ensure you have api-key for gemini, to get your check https://aistudio.google.com
 - **Transcription accuracy problems**: Try adjusting language settings if available
 
 ## Contributing
