@@ -135,7 +135,7 @@ go version
 ffmpeg -version
 
 # Test whisper.cpp installation
-/path/to/whisper/build/bin/whisper-cli -h
+/path/to/whisper.cpp/build/bin/whisper-cli -h
 ```
 
 All components must be properly installed and accessible for VideoSummaryGo to function correctly.
