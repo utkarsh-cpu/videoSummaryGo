@@ -33,7 +33,7 @@ git clone --recursive https://github.com/utkarsh-cpu/videoSummaryGo.git
 ```
 - Only Repository
  ```bash
-git clone --recursive https://github.com/utkarsh-cpu/videoSummaryGo.git
+git clone  https://github.com/utkarsh-cpu/videoSummaryGo.git
 
 ```
 
