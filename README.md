@@ -128,7 +128,7 @@ All components must be properly installed and accessible for VideoSummaryGo to f
 1. Run the main application with your video file:
    ```
    go build main.go
-   ./main gemini-pro YOUR_API_KEY 60 ./whisper-cpp/build/bin/main ./whisper-cpp/models/ggml-medium.en.bin 4 en ./videos/lecture.mp4
+   ./main gemini-pro YOUR_API_KEY 60 ./whisper-cpp/build/bin/whisper-cli ./whisper-cpp/models/ggml-medium.en.bin 4 en ./videos/lecture.mp4
    ```
 
 2. The application will:
