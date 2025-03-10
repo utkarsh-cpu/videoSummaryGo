@@ -23,6 +23,20 @@ Before using VideoSummaryGo, ensure you have the following installed:
 - Whisper.cpp (for audio transcription)
 - Dependencies listed in `go.mod`
 
+
+### Cloning this repository
+
+- Repository with all its sub modules
+```bash
+git clone --recursive https://github.com/utkarsh-cpu/videoSummaryGo.git
+
+```
+- Only Repository
+ ```bash
+git clone --recursive https://github.com/utkarsh-cpu/videoSummaryGo.git
+
+```
+
 ### Installing FFmpeg
 
 FFmpeg is required for extracting audio from videos and processing media files. Follow the steps below to install it:
@@ -75,7 +89,11 @@ Whisper.cpp is needed for audio transcription. Here's how to build it:
 
 1. Clone the whisper.cpp repository:
    ```bash
+   ## if submodeules are not cloned
    git clone https://github.com/ggerganov/whisper.cpp
+   cd whisper.cpp
+   
+   ## else 
    cd whisper.cpp
    ```
 
