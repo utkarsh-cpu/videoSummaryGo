@@ -93,13 +93,6 @@ brew install ffmpeg
 ```
 
 ### Installing tesseract
-Okay, here's a breakdown of how to download and install Tesseract OCR for various operating systems, along with explanations and important considerations:
-
-**Understanding Tesseract**
-
-*   **Tesseract OCR Engine:** This is the core software that performs the Optical Character Recognition (converting images of text into machine-readable text).  You *always* need this.
-*   **Language Data:** Tesseract needs language-specific data files (traineddata) to recognize text in a particular language (e.g., English, Spanish, Chinese).  You need to download the data files for the languages you intend to use.
-*   **Front-ends/Wrappers (Optional but often useful):**  Tesseract itself is a command-line tool.  While you can use it directly from the command line, many users prefer graphical user interfaces (GUIs) or programming language wrappers (like `pytesseract` in Python) to make it easier to work with.
 
 **Downloads and Installation Instructions**
 
