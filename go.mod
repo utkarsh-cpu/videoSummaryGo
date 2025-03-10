@@ -8,7 +8,7 @@ require (
 	github.com/ggerganov/whisper.cpp/bindings/go v0.0.0-20250308131301-7d1400571779
 	github.com/go-audio/wav v1.1.0
 	github.com/google/generative-ai-go v0.19.0
-	gocv.io/x/gocv v0.40.0
+	github.com/otiai10/gosseract v2.2.1+incompatible
 	google.golang.org/api v0.223.0
 )
 
@@ -28,6 +28,7 @@ require (
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/googleapis/enterprise-certificate-proxy v0.3.4 // indirect
 	github.com/googleapis/gax-go/v2 v2.14.1 // indirect
+	github.com/otiai10/mint v1.6.3 // indirect
 	go.opentelemetry.io/auto/sdk v1.1.0 // indirect
 	go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc v0.59.0 // indirect
 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.59.0 // indirect

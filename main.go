@@ -1,14 +1,20 @@
 package main
 
+// #cgo pkg-config: tesseract
+import "C"
+
 import (
 	"bytes"
 	"context"
 	"fmt"
+	"image"
+	"image/jpeg"
 	"io/fs"
 	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -177,11 +183,184 @@ func transcribeAudioWhisperCLI(audioPath string, whisperCLIPath string, whisperM
 	return transcript, nil
 }
 
+// extractFrames function
+func extractFrames(videoPath string, videoIndex int, chunkNum int) ([]string, error) {
+	tempDir, err := os.MkdirTemp("", fmt.Sprintf("frames_video%d_chunk%d", videoIndex, chunkNum))
+	if err != nil {
+		return nil, fmt.Errorf("error creating temporary directory for frames: %w", err)
+	}
+
+	// Extract frames at 1fps.  Adjust -r as needed.
+	cmd := exec.Command("ffmpeg",
+		"-i", videoPath,
+		"-r", "1", // Frames per second
+		"-q:v", "2", // JPEG quality (2 is high)
+		fmt.Sprintf("%s/frame_%%04d.jpg", tempDir),
+	)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		os.RemoveAll(tempDir)
+		return nil, fmt.Errorf("error extracting frames: %w, output: %s", err, string(output))
+	}
+
+	// Get list of extracted frame files
+	var framePaths []string
+	filepath.WalkDir(tempDir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !d.IsDir() && strings.HasSuffix(d.Name(), ".jpg") {
+			framePaths = append(framePaths, path)
+		}
+		return nil
+	})
+
+	return framePaths, nil
+}
+
+// transcribeFramesTesseractCLI function
+func transcribeFramesTesseractCLI(framePaths []string) (string, error) {
+	var combinedTranscript strings.Builder
+	var wg sync.WaitGroup
+	frameResults := make(chan struct {
+		Text  string
+		Error error
+	}, len(framePaths)) // Buffered channel for results
+
+	// Limit concurrency to the number of CPUs (or a reasonable limit)
+	numWorkers := runtime.NumCPU()
+	if numWorkers > 8 { //  cap it to 8 for now to avoid too many subprocesses
+		numWorkers = 8
+	}
+	guard := make(chan struct{}, numWorkers) // Semaphore
+
+	for _, framePath := range framePaths {
+		wg.Add(1)
+		guard <- struct{}{} // Acquire a slot
+
+		go func(fp string) {
+			defer wg.Done()
+			defer func() { <-guard }() // Release the slot
+
+			// Open the image file
+			imgFile, err := os.Open(fp)
+			if err != nil {
+				frameResults <- struct {
+					Text  string
+					Error error
+				}{"", fmt.Errorf("error opening image file %s: %w", fp, err)}
+				return
+			}
+
+			// Decode the image
+			img, _, err := image.Decode(imgFile)
+			imgFile.Close() // Close immediately after decoding
+			if err != nil {
+				frameResults <- struct {
+					Text  string
+					Error error
+				}{"", fmt.Errorf("error decoding image file %s: %w", fp, err)}
+				return
+			}
+
+			// Convert to JPEG
+			buf := new(bytes.Buffer)
+			if err := jpeg.Encode(buf, img, &jpeg.Options{Quality: 90}); err != nil {
+				frameResults <- struct {
+					Text  string
+					Error error
+				}{"", fmt.Errorf("error encoding image to JPEG: %w", err)}
+				return
+			}
+			jpegBytes := buf.Bytes()
+
+			tempFile, err := os.CreateTemp("", "ocr_*.jpg")
+			if err != nil {
+				frameResults <- struct {
+					Text  string
+					Error error
+				}{"", fmt.Errorf("error creating temp file: %w", err)}
+				return
+			}
+			tempFilePath := tempFile.Name()
+			defer os.Remove(tempFilePath)
+
+			_, err = tempFile.Write(jpegBytes)
+			if err != nil {
+				tempFile.Close() // Close before removing
+				frameResults <- struct {
+					Text  string
+					Error error
+				}{"", fmt.Errorf("error writing to temp file: %w", err)}
+				return
+			}
+			if err := tempFile.Close(); err != nil {
+				frameResults <- struct {
+					Text  string
+					Error error
+				}{"", fmt.Errorf("error closing temp file: %w", err)}
+				return
+			}
+
+			cmd := exec.Command("tesseract", tempFilePath, "stdout")
+			var stdout, stderr bytes.Buffer
+			cmd.Stdout = &stdout
+			cmd.Stderr = &stderr
+
+			err = cmd.Run()
+			if err != nil {
+				frameResults <- struct {
+					Text  string
+					Error error
+				}{"", fmt.Errorf("error running tesseract on %s: %w, stderr: %s", fp, err, stderr.String())}
+				return
+			}
+
+			frameResults <- struct {
+				Text  string
+				Error error
+			}{stdout.String(), nil}
+
+		}(framePath)
+	}
+
+	wg.Wait()           // Wait for all goroutines to finish
+	close(frameResults) // Close the channel - no more results coming
+
+	// Collect results from the channel
+	for result := range frameResults {
+		if result.Error != nil {
+			log.Println(result.Error) // Log individual errors
+			continue                  // Skip frames with errors
+		}
+		combinedTranscript.WriteString(result.Text)
+		combinedTranscript.WriteString("\n")
+	}
+
+	return combinedTranscript.String(), nil
+}
+
 // transcribeVideoLLM function
 func transcribeVideoLLM(ctx context.Context, client *genai.Client, model *genai.GenerativeModel, videoPath string, videoIndex int, chunkNum int) (string, error) {
 	uploadedFile, err := client.UploadFileFromPath(ctx, videoPath, nil)
 	if err != nil {
-		return "", fmt.Errorf("error uploading video chunk %d for video %d: %w", chunkNum, videoIndex, err)
+		// If LLM fails, fall back to Tesseract
+		fmt.Printf("Chunk %d for video %d: LLM upload failed, falling back to Tesseract...\n", chunkNum, videoIndex)
+		framePaths, err := extractFrames(videoPath, videoIndex, chunkNum)
+		if err != nil {
+			return "", fmt.Errorf("error extracting frames for video %d chunk %d: %w", videoIndex, chunkNum, err)
+		}
+		transcript, err := transcribeFramesTesseractCLI(framePaths)
+		if err != nil {
+			return "", fmt.Errorf("error transcribing frames with Tesseract for video %d chunk %d: %w", videoIndex, chunkNum, err)
+		}
+
+		// Cleanup extracted frames.
+		if len(framePaths) > 0 {
+			os.RemoveAll(filepath.Dir(framePaths[0]))
+		}
+		return transcript, nil
+
 	}
 
 	fmt.Println("Waiting for 30 seconds after file upload to ensure file activation...")
@@ -195,6 +374,25 @@ func transcribeVideoLLM(ctx context.Context, client *genai.Client, model *genai.
 		genai.FileData{URI: uploadedFile.URI},
 	}
 	videoTranscript := sentLlmPrompt(model, promptList, ctx, nil, videoIndex) // No file writing here
+
+	if videoTranscript == "" {
+		// If LLM transcription fails, fall back to Tesseract
+		fmt.Printf("Chunk %d for video %d: LLM transcription failed, falling back to Tesseract...\n", chunkNum, videoIndex)
+		framePaths, err := extractFrames(videoPath, videoIndex, chunkNum)
+		if err != nil {
+			return "", fmt.Errorf("error extracting frames for video %d chunk %d: %w", videoIndex, chunkNum, err)
+		}
+		transcript, err := transcribeFramesTesseractCLI(framePaths)
+		// Cleanup extracted frames.
+		if len(framePaths) > 0 {
+			os.RemoveAll(filepath.Dir(framePaths[0]))
+		}
+		if err != nil {
+			return "", fmt.Errorf("error transcribing frames with Tesseract for video %d chunk %d: %w", videoIndex, chunkNum, err)
+		}
+		return transcript, nil
+	}
+
 	fmt.Printf("Chunk %d for video %d: Video transcribed by LLM.\n", chunkNum, videoIndex)
 
 	return videoTranscript, nil
@@ -257,6 +455,8 @@ func processChunk(chunkData ChunkData, client *genai.Client, model *genai.Genera
 
 // main function
 func main() {
+	runtime.GOMAXPROCS(runtime.NumCPU()) // Use all available CPUs
+
 	if len(os.Args) != 9 {
 		fmt.Println("Usage: program <llm_model> <api_key> <chunk_duration_seconds> <whisper_cli_path> <whisper_model_path> <whisper_threads> <whisper_language> <video_path_or_folder>")
 		os.Exit(1)
