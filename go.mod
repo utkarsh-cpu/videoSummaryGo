@@ -41,3 +41,5 @@ require (
 	google.golang.org/grpc v1.71.0 // indirect
 	google.golang.org/protobuf v1.36.5 // indirect
 )
+
+replace github.com/utkarsh-cpu/videoSummaryGo => github.com/utkarsh-cpu/videoSummaryGo v0.0.0-20250310215801-ac90a4195f0c
