@@ -451,6 +451,7 @@ func processChunk(chunkData ChunkData, client *genai.Client, model *genai.Genera
 }
 
 func VideoSummary(llm string, apiKey string, chunkDuration int, whisperCLIPath string, whisperModelPath string, whisperThreads int, whisperLanguage string, inputPath string) error {
+	runtime.GOMAXPROCS(runtime.NumCPU())
 
 	client, model, ctx := setLlmApi(llm, apiKey)
 	defer client.Close()
@@ -586,7 +587,7 @@ func VideoSummary(llm string, apiKey string, chunkDuration int, whisperCLIPath s
 
 // main function
 func main() {
-	runtime.GOMAXPROCS(runtime.NumCPU()) // Use all available CPUs
+	// Use all available CPUs
 
 	if len(os.Args) != 9 {
 		fmt.Println("Usage: program <llm_model> <api_key> <chunk_duration_seconds> <whisper_cli_path> <whisper_model_path> <whisper_threads> <whisper_language> <video_path_or_folder>")
