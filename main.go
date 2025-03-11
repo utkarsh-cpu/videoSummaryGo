@@ -450,28 +450,7 @@ func processChunk(chunkData ChunkData, client *genai.Client, model *genai.Genera
 
 }
 
-// main function
-func main() {
-	runtime.GOMAXPROCS(runtime.NumCPU()) // Use all available CPUs
-
-	if len(os.Args) != 9 {
-		fmt.Println("Usage: program <llm_model> <api_key> <chunk_duration_seconds> <whisper_cli_path> <whisper_model_path> <whisper_threads> <whisper_language> <video_path_or_folder>")
-		os.Exit(1)
-	}
-	llm := os.Args[1]
-	apiKey := os.Args[2]
-	chunkDuration, err := strconv.Atoi(os.Args[3])
-	if err != nil {
-		log.Fatalf("Invalid chunk duration: %v\n", err)
-	}
-	whisperCLIPath := os.Args[4]
-	whisperModelPath := os.Args[5]
-	whisperThreads, err := strconv.Atoi(os.Args[6])
-	if err != nil {
-		log.Fatalf("Invalid whisper threads: %v\n", err)
-	}
-	whisperLanguage := os.Args[7]
-	inputPath := os.Args[8]
+func VideoSummary(llm string, apiKey string, chunkDuration int, whisperCLIPath string, whisperModelPath string, whisperThreads int, whisperLanguage string, inputPath string) error {
 
 	client, model, ctx := setLlmApi(llm, apiKey)
 	defer client.Close()
@@ -509,7 +488,7 @@ func main() {
 
 	if len(videoPaths) == 0 {
 		fmt.Println("No video files found to process.")
-		return
+		return nil
 	}
 
 	for videoIndex, videoPath := range videoPaths {
@@ -601,6 +580,37 @@ func main() {
 
 	fmt.Println("\nAll videos processing complete.")
 	fmt.Println("Exiting.")
+	return nil
+
+}
+
+// main function
+func main() {
+	runtime.GOMAXPROCS(runtime.NumCPU()) // Use all available CPUs
+
+	if len(os.Args) != 9 {
+		fmt.Println("Usage: program <llm_model> <api_key> <chunk_duration_seconds> <whisper_cli_path> <whisper_model_path> <whisper_threads> <whisper_language> <video_path_or_folder>")
+		os.Exit(1)
+	}
+	llm := os.Args[1]
+	apiKey := os.Args[2]
+	chunkDuration, err := strconv.Atoi(os.Args[3])
+	if err != nil {
+		log.Fatalf("Invalid chunk duration: %v\n", err)
+	}
+	whisperCLIPath := os.Args[4]
+	whisperModelPath := os.Args[5]
+	whisperThreads, err := strconv.Atoi(os.Args[6])
+	if err != nil {
+		log.Fatalf("Invalid whisper threads: %v\n", err)
+	}
+	whisperLanguage := os.Args[7]
+	inputPath := os.Args[8]
+
+	err = VideoSummary(llm, apiKey, chunkDuration, whisperCLIPath, whisperModelPath, whisperThreads, whisperLanguage, inputPath)
+	if err != nil {
+		return
+	}
 }
 
 // isVideoFile function
