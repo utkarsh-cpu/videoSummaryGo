@@ -1,4 +1,4 @@
-package main
+package videoSummaryGo
 
 import (
 	"bytes"
@@ -8,9 +8,11 @@ import (
 	"image/jpeg"
 	"io/fs"
 	"log"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -31,8 +33,79 @@ type ChunkData struct {
 	BaseName   string
 }
 
-// setLlmApi function
-func setLlmApi(llm string, apiKey string) (*genai.Client, *genai.GenerativeModel, context.Context) {
+func YoutubeDownloader(url string, destinationDir string) (string, error) {
+	// 1. Check for yt-dlp
+	ytDlpPath, err := exec.LookPath("yt-dlp")
+	if err != nil {
+		return "", fmt.Errorf("yt-dlp not found in PATH: %w", err)
+	}
+
+	// 2. Validate URL (basic check - can be improved)
+	if !strings.HasPrefix(url, "https://www.youtube.com/") && !strings.HasPrefix(url, "https://youtu.be/") && !strings.HasPrefix(url, "https://youtube.com/") {
+		return "", fmt.Errorf("invalid YouTube URL: %s", url)
+	}
+
+	// 3. Create the destination directory if it doesn't exist
+	if err := os.MkdirAll(destinationDir, 0755); err != nil {
+		return "", fmt.Errorf("failed to create destination directory '%s': %w", destinationDir, err)
+	}
+
+	// 4.  Construct the yt-dlp command.  Crucially, use -o for output template.
+	//     This is *much* more reliable than parsing stdout.
+	outputTemplate := filepath.Join(destinationDir, "%(title)s-%(id)s.%(ext)s")
+	cmd := exec.Command(ytDlpPath,
+		"-o", outputTemplate, // Use output template!
+		"--merge-output-format", "mp4", // Prefer MP4, but allow merging if needed.
+		"--no-mtime", // Don't set file modification time based on upload date.
+		url,
+	)
+
+	// 5. Capture stdout and stderr separately for better error handling.
+	var stdout, stderr strings.Builder
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	// 6. Execute the command
+	err = cmd.Run()
+	if err != nil {
+		return "", fmt.Errorf("yt-dlp command failed:\nURL: %s\nError: %w\nStdout: %s\nStderr: %s", url, err, stdout.String(), stderr.String())
+	}
+
+	// 7. Extract the filename from yt-dlp's output.  Since we used -o,
+	//    we *expect* a line like "[download] Destination: /path/to/file.mp4".
+	//    We use a regular expression for robustness.
+	filename, err := extractFilenameFromOutput(stdout.String(), destinationDir)
+	if err != nil {
+		return "", fmt.Errorf("failed to extract filename: %w\nStdout: %s", err, stdout.String())
+	}
+
+	return filename, nil
+}
+
+// extractFilenameFromOutput parses yt-dlp's output to get the downloaded filename.
+func extractFilenameFromOutput(output string, destinationDir string) (string, error) {
+	// Regular expression to match the "[download] Destination: ..." line
+	re := regexp.MustCompile(`\[download\] Destination: (.*)`)
+	match := re.FindStringSubmatch(output)
+
+	if len(match) > 1 {
+		// match[1] contains the captured file path
+		return "./" + match[1], nil // Return the full path
+	}
+
+	//Improved regex that works even if the "Destination:" is not shown in the output
+	re = regexp.MustCompile(`\[(?:.*)\] (?:Merging formats into|Deleting original file|Resizing video into) "(.*)"`)
+	match = re.FindStringSubmatch(output)
+
+	if len(match) > 1 {
+		return "./" + match[1], nil // Return the full path
+	}
+
+	return "", fmt.Errorf("filename not found in yt-dlp output")
+}
+
+// SetLlmApi function
+func SetLlmApi(llm string, apiKey string) (*genai.Client, *genai.GenerativeModel, context.Context) {
 	ctx := context.Background()
 	client, err := genai.NewClient(ctx, option.WithAPIKey(apiKey))
 	if err != nil {
@@ -44,8 +117,8 @@ func setLlmApi(llm string, apiKey string) (*genai.Client, *genai.GenerativeModel
 }
 
 const (
-	maxRetries = 3                // Maximum number of retry attempts for LLM calls
-	retryDelay = 15 * time.Second // Delay between retry attempts
+	maxRetries = 5                // Maximum number of retry attempts for LLM calls
+	retryDelay = 30 * time.Second // Delay between retry attempts
 )
 
 // sentLlmPrompt function
@@ -100,12 +173,13 @@ func chunkVideo(videoPath string, chunkDuration int, videoIndex int, baseName st
 		return nil, fmt.Errorf("error creating temporary directory: %w", err)
 	}
 
-	cmd := exec.Command("ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", videoPath)
+	cmd := exec.Command("ffprobe", "-v", "quiet", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", videoPath)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		os.RemoveAll(tempDir)
 		return nil, fmt.Errorf("error getting video duration: %w, output: %s", err, string(output))
 	}
+
 	duration, err := strconv.ParseFloat(strings.TrimSpace(string(output)), 64)
 	if err != nil {
 		os.RemoveAll(tempDir)
@@ -148,8 +222,8 @@ func chunkVideo(videoPath string, chunkDuration int, videoIndex int, baseName st
 	return chunks, nil
 }
 
-// transcribeAudioWhisperCLI function
-func transcribeAudioWhisperCLI(audioPath string, whisperCLIPath string, whisperModelPath string, videoIndex int, chunkNum int, threads int, language string) (string, error) {
+// TranscribeAudioWhisperCLI function
+func TranscribeAudioWhisperCLI(audioPath string, whisperCLIPath string, whisperModelPath string, videoIndex int, chunkNum int, threads int, language string) (string, error) {
 	cmdArgs := []string{
 		"--model", whisperModelPath,
 		"--threads", fmt.Sprintf("%d", threads),
@@ -215,8 +289,8 @@ func extractFrames(videoPath string, videoIndex int, chunkNum int) ([]string, er
 	return framePaths, nil
 }
 
-// transcribeFramesTesseractCLI function
-func transcribeFramesTesseractCLI(framePaths []string) (string, error) {
+// TranscribeVideoTesseractAPIAPI function
+func TranscribeVideoTesseractAPI(framePaths []string) (string, error) {
 	var combinedTranscript strings.Builder
 	var wg sync.WaitGroup
 	frameResults := make(chan struct {
@@ -347,7 +421,7 @@ func transcribeVideoLLM(ctx context.Context, client *genai.Client, model *genai.
 		if err != nil {
 			return "", fmt.Errorf("error extracting frames for video %d chunk %d: %w", videoIndex, chunkNum, err)
 		}
-		transcript, err := transcribeFramesTesseractCLI(framePaths)
+		transcript, err := TranscribeVideoTesseractAPI(framePaths)
 		if err != nil {
 			return "", fmt.Errorf("error transcribing frames with Tesseract for video %d chunk %d: %w", videoIndex, chunkNum, err)
 		}
@@ -361,14 +435,14 @@ func transcribeVideoLLM(ctx context.Context, client *genai.Client, model *genai.
 	}
 
 	fmt.Println("Waiting for 30 seconds after file upload to ensure file activation...")
-	time.Sleep(30 * time.Second) // Wait for file to be ready
+	time.Sleep(60 * time.Second) // Wait for file to be ready
 	defer func() { client.DeleteFile(ctx, uploadedFile.Name) }()
 
 	fmt.Printf("Chunk %d for video %d: Video chunk uploaded as: %s\n", chunkNum, videoIndex, uploadedFile.URI)
 
 	promptList := []genai.Part{
-		genai.Text("## Task Description\nAnalyze the video and provide a detailed raw transcription of text displayed in the video."),
 		genai.FileData{URI: uploadedFile.URI},
+		genai.Text("## Task Description\nAnalyze the video and provide a detailed raw transcription of text displayed in the video."),
 	}
 	videoTranscript := sentLlmPrompt(model, promptList, ctx, nil, videoIndex) // No file writing here
 
@@ -379,7 +453,7 @@ func transcribeVideoLLM(ctx context.Context, client *genai.Client, model *genai.
 		if err != nil {
 			return "", fmt.Errorf("error extracting frames for video %d chunk %d: %w", videoIndex, chunkNum, err)
 		}
-		transcript, err := transcribeFramesTesseractCLI(framePaths)
+		transcript, err := TranscribeVideoTesseractAPI(framePaths)
 		// Cleanup extracted frames.
 		if len(framePaths) > 0 {
 			os.RemoveAll(filepath.Dir(framePaths[0]))
@@ -414,7 +488,7 @@ func processChunk(chunkData ChunkData, client *genai.Client, model *genai.Genera
 	var audioErr error
 	go func() {
 		defer wg.Done()
-		audioTranscript, audioErr = transcribeAudioWhisperCLI(chunk.AudioPath, whisperCLIPath, whisperModelPath, chunk.VideoIndex, chunk.ChunkNum, whisperThreads, whisperLanguage)
+		audioTranscript, audioErr = TranscribeAudioWhisperCLI(chunk.AudioPath, whisperCLIPath, whisperModelPath, chunk.VideoIndex, chunk.ChunkNum, whisperThreads, whisperLanguage)
 		if audioErr != nil {
 			errorChannel <- fmt.Errorf("error transcribing audio for video %d chunk %d: %w", chunk.VideoIndex, chunk.ChunkNum, audioErr)
 			audioTranscript = fmt.Sprintf("Audio transcription failed for video %d chunk %d.", chunk.VideoIndex, chunk.ChunkNum)
@@ -453,7 +527,7 @@ func processChunk(chunkData ChunkData, client *genai.Client, model *genai.Genera
 func VideoSummary(llm string, apiKey string, chunkDuration int, whisperCLIPath string, whisperModelPath string, whisperThreads int, whisperLanguage string, inputPath string) error {
 	runtime.GOMAXPROCS(runtime.NumCPU())
 
-	client, model, ctx := setLlmApi(llm, apiKey)
+	client, model, ctx := SetLlmApi(llm, apiKey)
 	defer client.Close()
 
 	errorChannel := make(chan error, 10) // Buffered channel
@@ -585,12 +659,21 @@ func VideoSummary(llm string, apiKey string, chunkDuration int, whisperCLIPath s
 
 }
 
+func IsUrl(str string) string {
+	u, err := url.Parse(str)
+	if err == nil && u.Scheme != "" && u.Host != "" {
+		return "url"
+	}
+	return "path"
+}
+
 // main function
+/*
 func main() {
 	// Use all available CPUs
 
 	if len(os.Args) != 9 {
-		fmt.Println("Usage: program <llm_model> <api_key> <chunk_duration_seconds> <whisper_cli_path> <whisper_model_path> <whisper_threads> <whisper_language> <video_path_or_folder>")
+		fmt.Println("Usage: program <llm_model> <api_key> <chunk_duration_seconds> <whisper_cli_path> <whisper_model_path> <whisper_threads> <whisper_language> <video_path_or_folder_or_youtube_url>")
 		os.Exit(1)
 	}
 	llm := os.Args[1]
@@ -608,11 +691,26 @@ func main() {
 	whisperLanguage := os.Args[7]
 	inputPath := os.Args[8]
 
-	err = VideoSummary(llm, apiKey, chunkDuration, whisperCLIPath, whisperModelPath, whisperThreads, whisperLanguage, inputPath)
-	if err != nil {
-		return
+	if IsUrl(inputPath) == "url" {
+		destinationDir := "Videos" // Relative path
+		youtubePath, err := YoutubeDownloader(inputPath, destinationDir)
+		if err != nil {
+			fmt.Printf("Error: %v\n", err)
+			return
+		}
+		err = VideoSummary(llm, apiKey, chunkDuration, whisperCLIPath, whisperModelPath, whisperThreads, whisperLanguage, youtubePath)
+		if err != nil {
+			return
+		}
+	}
+	if IsUrl(inputPath) == "path" {
+		err = VideoSummary(llm, apiKey, chunkDuration, whisperCLIPath, whisperModelPath, whisperThreads, whisperLanguage, inputPath)
+		if err != nil {
+			return
+		}
 	}
 }
+*/
 
 // isVideoFile function
 func isVideoFile(path string) bool {

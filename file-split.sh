@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Loop through all UFSFF Lecture files
-for file in MM*_output.txt MM*_audio_output.txt MM*_video_output.txt; do
+for file in Algorithms*_output.txt Algorithms*_audio_output.txt Algorithms*_video_output.txt; do
     if [ -f "$file" ]; then
         # Extract the base name (without the suffix)
         if [[ $file == *"_audio_output.txt" ]]; then
