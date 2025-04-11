@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"image"
 	"image/jpeg"
+	"io"
 	"io/fs"
 	"log"
 	"net/url"
@@ -33,75 +34,283 @@ type ChunkData struct {
 	BaseName   string
 }
 
-func YoutubeDownloader(url string, destinationDir string) (string, error) {
-	// 1. Check for yt-dlp
+func YoutubeDownloader(url string, customDestDir string) (string, error) {
+	// Validate dependencies and URL
 	ytDlpPath, err := exec.LookPath("yt-dlp")
 	if err != nil {
 		return "", fmt.Errorf("yt-dlp not found in PATH: %w", err)
 	}
 
-	// 2. Validate URL (basic check - can be improved)
-	if !strings.HasPrefix(url, "https://www.youtube.com/") && !strings.HasPrefix(url, "https://youtu.be/") && !strings.HasPrefix(url, "https://youtube.com/") {
+	if !isValidYoutubeURL(url) {
 		return "", fmt.Errorf("invalid YouTube URL: %s", url)
 	}
 
-	// 3. Create the destination directory if it doesn't exist
-	if err := os.MkdirAll(destinationDir, 0755); err != nil {
-		return "", fmt.Errorf("failed to create destination directory '%s': %w", destinationDir, err)
-	}
-
-	// 4.  Construct the yt-dlp command.  Crucially, use -o for output template.
-	//     This is *much* more reliable than parsing stdout.
-	outputTemplate := filepath.Join(destinationDir, "%(title)s-%(id)s.%(ext)s")
-	cmd := exec.Command(ytDlpPath,
-		"-o", outputTemplate, // Use output template!
-		"--merge-output-format", "mp4", // Prefer MP4, but allow merging if needed.
-		"--no-mtime", // Don't set file modification time based on upload date.
-		url,
-	)
-
-	// 5. Capture stdout and stderr separately for better error handling.
-	var stdout, stderr strings.Builder
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	// 6. Execute the command
-	err = cmd.Run()
+	// Setup directories
+	tempDir, err := os.MkdirTemp("", "youtube_download_*")
 	if err != nil {
-		return "", fmt.Errorf("yt-dlp command failed:\nURL: %s\nError: %w\nStdout: %s\nStderr: %s", url, err, stdout.String(), stderr.String())
+		return "", fmt.Errorf("failed to create temp directory: %w", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	destDir := getDestinationDir(customDestDir)
+	if err := os.MkdirAll(destDir, 0755); err != nil {
+		return "", fmt.Errorf("failed to create destination directory: %w", err)
 	}
 
-	// 7. Extract the filename from yt-dlp's output.  Since we used -o,
-	//    we *expect* a line like "[download] Destination: /path/to/file.mp4".
-	//    We use a regular expression for robustness.
-	filename, err := extractFilenameFromOutput(stdout.String(), destinationDir)
+	// Download video
+	outputTemplate := filepath.Join(tempDir, "%(title)s-%(id)s.%(ext)s")
+	stdout, stderr, err := executeYTDLP(ytDlpPath, url, outputTemplate)
 	if err != nil {
-		return "", fmt.Errorf("failed to extract filename: %w\nStdout: %s", err, stdout.String())
+		return "", fmt.Errorf("download failed: %w\nstdout: %s\nstderr: %s", err, stdout, stderr)
 	}
 
-	return filename, nil
+	// Process downloaded file
+	tempFilePath, err := findDownloadedFile(stdout, tempDir)
+	if err != nil {
+		return "", err
+	}
+
+	// Move to destination
+	return moveToDestination(tempFilePath, destDir)
 }
 
-// extractFilenameFromOutput parses yt-dlp's output to get the downloaded filename.
+func isValidYoutubeURL(url string) bool {
+	validPrefixes := []string{
+		"https://www.youtube.com/",
+		"https://youtu.be/",
+		"https://youtube.com/",
+	}
+	for _, prefix := range validPrefixes {
+		if strings.HasPrefix(url, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func getDestinationDir(customDir string) string {
+	var destDir string
+	if customDir != "" {
+		destDir = customDir
+	} else {
+		// Default to Videos directory in the current working directory
+		cwd, err := os.Getwd()
+		if err != nil {
+			// Fallback: Use a relative path if Getwd fails, though this is unlikely
+			log.Printf("Warning: Failed to get current directory: %v. Using relative path 'Videos'.", err)
+			return "Videos"
+		}
+		destDir = filepath.Join(cwd, "Videos")
+	}
+
+	// Ensure the path is absolute
+	absDestDir, err := filepath.Abs(destDir)
+	if err != nil {
+		log.Printf("Warning: Failed to convert destination directory '%s' to absolute path: %v. Using original.", destDir, err)
+		return destDir // Return original if Abs fails
+	}
+
+	log.Printf("Resolved Destination Directory (Absolute): %s\n", absDestDir)
+	return absDestDir
+}
+
+func executeYTDLP(ytDlpPath, url, outputTemplate string) (string, string, error) {
+	var stdout, stderr strings.Builder
+	cmd := exec.Command(ytDlpPath,
+		"-o", outputTemplate,
+		"--merge-output-format", "mp4",
+		"--no-mtime",
+		"--retries", "3",
+		"--fragment-retries", "10",
+		"--force-ipv4",
+		url,
+	)
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	return stdout.String(), stderr.String(), err
+}
+
+func moveToDestination(tempFilePath, destDir string) (string, error) {
+	fileName := sanitizeFilename(filepath.Base(tempFilePath))
+
+	// Ensure destDir is absolute (should already be, but double-check)
+	absDestDir, err := filepath.Abs(destDir)
+	if err != nil {
+		return "", fmt.Errorf("failed to get absolute path for destination directory '%s': %w", destDir, err)
+	}
+
+	destPath := filepath.Join(absDestDir, fileName)
+
+	// Ensure destPath is absolute (it should be if absDestDir and fileName are correct)
+	absDestPath, err := filepath.Abs(destPath)
+	if err != nil {
+		return "", fmt.Errorf("failed to get absolute path for final destination '%s': %w", destPath, err)
+	}
+
+	fmt.Printf("Attempting to move temp file '%s' to '%s'\n", tempFilePath, absDestPath)
+
+	// Remove existing file if present
+	if _, err := os.Stat(absDestPath); err == nil {
+		log.Printf("Removing existing file at destination: %s\n", absDestPath)
+		if err := os.Remove(absDestPath); err != nil {
+			// Log warning but proceed, copy might overwrite
+			log.Printf("Warning: Failed to remove existing file at '%s': %v", absDestPath, err)
+		}
+	}
+
+	// Copy file
+	if err := copyFile(tempFilePath, absDestPath); err != nil {
+		return "", fmt.Errorf("failed to copy file from '%s' to '%s': %w", tempFilePath, absDestPath, err)
+	}
+
+	log.Printf("Successfully copied file to: %s\n", absDestPath)
+	return absDestPath, nil // Return the final absolute path
+}
+
+func copyFile(src, dst string) error {
+	srcFile, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer srcFile.Close()
+
+	dstFile, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	defer dstFile.Close()
+
+	_, err = io.Copy(dstFile, srcFile)
+	return err
+}
+
+func sanitizeFilename(filename string) string {
+	replacer := strings.NewReplacer(
+		"?", "_", "？", "_", // Added full-width question mark
+		"*", "_", ":", "_",
+		"<", "_", ">", "_", "\"", "_",
+		"|", "_", "/", "_", "\\", "_",
+	)
+	// Also replace consecutive underscores resulting from replacements
+	sanitized := replacer.Replace(filename)
+	re := regexp.MustCompile(`_+`) // Match one or more underscores
+	sanitized = re.ReplaceAllString(sanitized, "_")
+	// Trim leading/trailing underscores
+	sanitized = strings.Trim(sanitized, "_")
+	// Optional: Handle potential length issues (though less common now)
+	// maxLen := 200 // Example limit
+	// if len(sanitized) > maxLen {
+	//  sanitized = sanitized[:maxLen]
+	// }
+	return sanitized
+}
+
 func extractFilenameFromOutput(output string, destinationDir string) (string, error) {
-	// Regular expression to match the "[download] Destination: ..." line
-	re := regexp.MustCompile(`\[download\] Destination: (.*)`)
-	match := re.FindStringSubmatch(output)
-
-	if len(match) > 1 {
-		// match[1] contains the captured file path
-		return "./" + match[1], nil // Return the full path
+	// Prioritize the message indicating the final merged/processed file
+	// Regex updated to be less greedy and handle quotes possibly within filename (though unlikely)
+	mergePattern := `\[(?:ffmpeg|Merger|ExtractAudio|ModifyChapters|FixupM3u8|FixupTimestamp|FixupDuration)\] Merging formats into "([^"]+)"`
+	if match := regexp.MustCompile(mergePattern).FindStringSubmatch(output); len(match) > 1 {
+		potentialPath := match[1]
+		// This path from the log is often relative to the CWD yt-dlp ran in (which *is* the tempDir because of -o)
+		// Or sometimes it's absolute. Best bet: join with tempDir and check.
+		fullPath := filepath.Join(destinationDir, filepath.Base(potentialPath)) // Use Base to be safe
+		if _, err := os.Stat(fullPath); err == nil {
+			log.Printf("Extracted final filename from merge log: %s", fullPath)
+			return fullPath, nil
+		}
+		// If not found when joined, maybe the log path was already absolute? Check that.
+		if filepath.IsAbs(potentialPath) {
+			if _, err := os.Stat(potentialPath); err == nil {
+				log.Printf("Extracted final filename (absolute) from merge log: %s", potentialPath)
+				return potentialPath, nil
+			}
+		}
+		log.Printf("Warning: Merge pattern matched '%s', but couldn't verify path '%s' or '%s'.", potentialPath, fullPath, potentialPath)
+		// Fall through to Destination pattern
 	}
 
-	//Improved regex that works even if the "Destination:" is not shown in the output
-	re = regexp.MustCompile(`\[(?:.*)\] (?:Merging formats into|Deleting original file|Resizing video into) "(.*)"`)
-	match = re.FindStringSubmatch(output)
-
-	if len(match) > 1 {
-		return "./" + match[1], nil // Return the full path
+	// Fallback to the initial destination message - This might be an intermediate file!
+	destPattern := `\[download\] Destination: (.*)`
+	if match := regexp.MustCompile(destPattern).FindStringSubmatch(output); len(match) > 1 {
+		filePath := match[1]
+		// This path *should* be the one specified by -o, hence within destinationDir
+		log.Printf("Extracted filename from destination log: %s", filePath)
+		if _, err := os.Stat(filePath); err == nil {
+			// Return this only as a fallback, maybe log a warning
+			log.Printf("Warning: Using filename from 'Destination:' log, might be intermediate: %s", filePath)
+			return filePath, nil
+		}
+		log.Printf("Warning: Destination pattern matched '%s', but os.Stat failed.", filePath)
 	}
 
-	return "", fmt.Errorf("filename not found in yt-dlp output")
+	return "", fmt.Errorf("filename not found reliably in yt-dlp output")
+}
+
+// Adjust findDownloadedFile to be slightly more robust with fallbacks
+func findDownloadedFile(stdout, tempDir string) (string, error) {
+	log.Printf("Attempting to extract filename from yt-dlp stdout...")
+	if path, err := extractFilenameFromOutput(stdout, tempDir); err == nil {
+		log.Printf("Found path via regex: %s", path)
+		// Double-check existence here before returning
+		if _, statErr := os.Stat(path); statErr == nil {
+			// Check if it's the FINAL expected format (mp4)
+			if strings.HasSuffix(strings.ToLower(path), ".mp4") && !regexp.MustCompile(`\.f\d+\.mp4$`).MatchString(path) {
+				log.Printf("Regex found final MP4 path: %s", path)
+				return path, nil
+			} else {
+				log.Printf("Warning: Regex found path '%s', but it looks like an intermediate format or non-MP4. Will try Glob.", path)
+				// Continue to Glob fallback
+			}
+
+		} else {
+			log.Printf("Warning: Regex found path '%s', but os.Stat failed: %v. Falling back to glob.", path, statErr)
+			// Continue to Glob fallback
+		}
+	} else {
+		log.Printf("Failed to extract filename via regex: %v. Falling back to glob.", err)
+	}
+
+	// Fallback: find the final MP4 file specifically
+	log.Printf("Falling back to searching for *.mp4 in %s", tempDir)
+	globPattern := filepath.Join(tempDir, "*.mp4")
+	files, err := filepath.Glob(globPattern)
+	if err != nil {
+		return "", fmt.Errorf("error during glob search '%s': %w", globPattern, err)
+	}
+
+	// Filter out intermediate files if multiple MP4s are found
+	finalFiles := []string{}
+	intermediateRegex := regexp.MustCompile(`\.f\d+\.mp4$`)
+	for _, file := range files {
+		if !intermediateRegex.MatchString(file) {
+			finalFiles = append(finalFiles, file)
+		}
+	}
+
+	if len(finalFiles) == 1 {
+		log.Printf("Found final MP4 file via glob: %s", finalFiles[0])
+		return finalFiles[0], nil
+	} else if len(finalFiles) > 1 {
+		log.Printf("Warning: Found multiple potential final MP4 files via glob: %v. Returning the first one: %s", finalFiles, finalFiles[0])
+		return finalFiles[0], nil // Or return error? Choosing first is pragmatic.
+	} else {
+		// If no non-intermediate MP4, maybe merge failed? Look for *any* MP4 as last resort.
+		if len(files) > 0 {
+			log.Printf("Warning: No clear final MP4 found via glob. Returning first MP4 found (might be intermediate): %s", files[0])
+			return files[0], nil
+		}
+		// Last resort: Check other common extensions
+		otherVideoPatterns := []string{"*.mkv", "*.webm", "*.mov", "*.avi"}
+		for _, pattern := range otherVideoPatterns {
+			otherFiles, _ := filepath.Glob(filepath.Join(tempDir, pattern))
+			if len(otherFiles) > 0 {
+				log.Printf("Found fallback video file (non-mp4): %s", otherFiles[0])
+				return otherFiles[0], nil
+			}
+		}
+		return "", fmt.Errorf("no suitable video file found in temp directory '%s' via glob", tempDir)
+	}
 }
 
 // SetLlmApi function
@@ -524,7 +733,7 @@ func processChunk(chunkData ChunkData, client *genai.Client, model *genai.Genera
 
 }
 
-func VideoSummary(llm string, apiKey string, chunkDuration int, whisperCLIPath string, whisperModelPath string, whisperThreads int, whisperLanguage string, inputPath string) error {
+func VideoSummary(llm string, apiKey string, chunkDuration int, whisperCLIPath string, whisperModelPath string, whisperThreads int, whisperLanguage string, inputPath string, inputFromUser string) error {
 	runtime.GOMAXPROCS(runtime.NumCPU())
 
 	client, model, ctx := SetLlmApi(llm, apiKey)
@@ -533,10 +742,21 @@ func VideoSummary(llm string, apiKey string, chunkDuration int, whisperCLIPath s
 	errorChannel := make(chan error, 10) // Buffered channel
 
 	var videoPaths []string
-	fileInfo, err := os.Stat(inputPath)
+	// Ensure inputPath is absolute BEFORE stat check
+	absInputPath, err := filepath.Abs(inputPath)
 	if err != nil {
-		log.Fatalf("Error accessing input path: %v\n", err)
+		// Use log.Fatalf as this is a critical starting point error
+		log.Fatalf("Error converting input path '%s' to absolute: %v\n", inputPath, err)
 	}
+
+	fileInfo, err := os.Stat(absInputPath)
+	if err != nil {
+		// The stat check should now use the absolute path
+		log.Fatalf("Error accessing input path '%s': %v\n", absInputPath, err)
+	}
+
+	// Use absInputPath consistently from now on
+	inputPath = absInputPath // Update inputPath to the absolute version
 
 	if fileInfo.IsDir() {
 		fmt.Println("Processing folder:", inputPath)
@@ -544,8 +764,14 @@ func VideoSummary(llm string, apiKey string, chunkDuration int, whisperCLIPath s
 			if err != nil {
 				return err
 			}
-			if !d.IsDir() && isVideoFile(path) {
-				videoPaths = append(videoPaths, path)
+			if !d.IsDir() && IsVideoFile(path) {
+				absVidPath, err := filepath.Abs(path) // Ensure stored path is absolute
+				if err != nil {
+					log.Printf("Warning: Could not get absolute path for %s: %v", path, err)
+					videoPaths = append(videoPaths, path) // Add original as fallback
+				} else {
+					videoPaths = append(videoPaths, absVidPath)
+				}
 			}
 			return nil
 		})
@@ -553,11 +779,11 @@ func VideoSummary(llm string, apiKey string, chunkDuration int, whisperCLIPath s
 			log.Fatalf("Error walking directory: %v\n", err)
 		}
 	} else {
-		fmt.Println("Processing single file:", inputPath)
-		if isVideoFile(inputPath) {
+		fmt.Println("Processing single file:", inputPath) // Already absolute
+		if IsVideoFile(inputPath) {
 			videoPaths = append(videoPaths, inputPath)
 		} else {
-			log.Println("Warning: Input path is not a video file:", inputPath)
+			log.Printf("Warning: Input path '%s' is not a video file.\n", inputPath)
 		}
 	}
 
@@ -567,13 +793,17 @@ func VideoSummary(llm string, apiKey string, chunkDuration int, whisperCLIPath s
 	}
 
 	for videoIndex, videoPath := range videoPaths {
+		// videoPath should now be absolute
+		videoDir := filepath.Dir(videoPath) // Get the directory of the video
 		baseName := strings.TrimSuffix(filepath.Base(videoPath), filepath.Ext(videoPath))
-		outputFileName := baseName + "_output.txt"
-		audioOutputFileName := baseName + "_audio_output.txt"
-		videoOutputFileName := baseName + "_video_output.txt"
+
+		// Create output files in the *same directory* as the video
+		outputFileName := filepath.Join(videoDir, baseName+"_output.txt")
+		audioOutputFileName := filepath.Join(videoDir, baseName+"_audio_output.txt")
+		videoOutputFileName := filepath.Join(videoDir, baseName+"_video_output.txt")
 
 		fmt.Printf("\n--- START PROCESSING VIDEO %d: %s ---\n", videoIndex+1, videoPath)
-		fmt.Println("Creating output files for video:", videoPath)
+		fmt.Printf("Creating output files in directory: %s\n", videoDir)
 
 		outputFile, err := os.Create(outputFileName)
 		if err != nil {
@@ -598,6 +828,7 @@ func VideoSummary(llm string, apiKey string, chunkDuration int, whisperCLIPath s
 		fmt.Println("Output files created for video:", videoPath)
 
 		fmt.Println("Chunking video sequentially...")
+		// Pass the absolute videoPath to chunkVideo
 		chunks, err := chunkVideo(videoPath, chunkDuration, videoIndex+1, baseName)
 		if err != nil {
 			log.Printf("Error chunking video %s: %v\n", videoPath, err)
@@ -628,7 +859,10 @@ func VideoSummary(llm string, apiKey string, chunkDuration int, whisperCLIPath s
 		combinedAudioTranscript := string(audioContent) // Convert to string
 		combinedVideoTranscript := string(videoContent)
 
-		combinedPromptText := fmt.Sprintf(`Here is a raw transcription of a video. Your task is to refine it into a well-structured, human-like summary with explanations while keeping all the original details. Analyze the lecture provided in the audio transcription and video text.  Identify the main topic, key arguments, supporting evidence, and any examples used.  Explain the lecture in a structured way, highlighting the connections between different ideas.  Use information from both the audio transcription and video text to create a comprehensive explanation, also use timestamp to help us correlate with the audio transcript:
+		var promptTemplate string
+		if inputFromUser != "" {
+			promptTemplate = `Context from user about this video: %s
+	Here is a raw transcription of a video. Your task is to refine it into a well-structured, human-like summary with explanations while keeping all the original details. Analyze the lecture provided in the audio transcription and video text. Identify the main topic, key arguments, supporting evidence, and any examples used, highlighting the connections between different ideas. Use information from both the audio transcription and video text to create a comprehensive explanation, also use timestamp to help us correlate with the audio transcript:
 
     --- RAW TRANSCRIPTION of Audio ---
     %s
@@ -636,7 +870,20 @@ func VideoSummary(llm string, apiKey string, chunkDuration int, whisperCLIPath s
     --- RAW TRANSCRIPTION of Video Text ---
     %s
 
-    Please rewrite it clearly with explanations where needed, ensuring it's easy to read and understand.`, combinedAudioTranscript, combinedVideoTranscript)
+    Please rewrite it clearly with explanations where needed, ensuring it's easy to read and understand.`
+		} else {
+			promptTemplate = `Here is a raw transcription of a video. Your task is to refine it into a well-structured, human-like summary with explanations while keeping all the original details. Analyze the lecture provided in the audio transcription and video text. Identify the main topic, key arguments, supporting evidence, and any examples used, highlighting the connections between different ideas. Use information from both the audio transcription and video text to create a comprehensive explanation, also use timestamp to help us correlate with the audio transcript:
+
+    --- RAW TRANSCRIPTION of Audio ---
+    %s
+
+    --- RAW TRANSCRIPTION of Video Text ---
+    %s
+
+    Please rewrite it clearly with explanations where needed, ensuring it's easy to read and understand.`
+		}
+
+		combinedPromptText := fmt.Sprintf(promptTemplate, inputFromUser, combinedAudioTranscript, combinedVideoTranscript)
 
 		combinedPrompt := []genai.Part{
 			genai.Text(combinedPromptText),
@@ -668,7 +915,7 @@ func IsUrl(str string) string {
 }
 
 // main function
-/*
+
 func main() {
 	// Use all available CPUs
 
@@ -692,28 +939,60 @@ func main() {
 	inputPath := os.Args[8]
 
 	if IsUrl(inputPath) == "url" {
-		destinationDir := "Videos" // Relative path
-		youtubePath, err := YoutubeDownloader(inputPath, destinationDir)
+		// Determine absolute destination directory
+		currentDir, err := os.Executable()
 		if err != nil {
-			fmt.Printf("Error: %v\n", err)
-			return
+			log.Fatalf("Error getting current directory: %v\n", err)
 		}
-		err = VideoSummary(llm, apiKey, chunkDuration, whisperCLIPath, whisperModelPath, whisperThreads, whisperLanguage, youtubePath)
+		// Use getDestinationDir which now ensures absolute path and creates the dir
+		destinationDir := getDestinationDir(filepath.Join(currentDir, "Videos"))
+		// No need to MkdirAll here, getDestinationDir/YoutubeDownloader handles it
+
+		log.Printf("Attempting download from URL: %s to Directory: %s\n", inputPath, destinationDir)
+		// YoutubeDownloader now returns the guaranteed absolute path
+		absPath, err := YoutubeDownloader(inputPath, destinationDir)
 		if err != nil {
-			return
+			log.Fatalf("Error downloading YouTube video: %v\n", err)
 		}
-	}
-	if IsUrl(inputPath) == "path" {
-		err = VideoSummary(llm, apiKey, chunkDuration, whisperCLIPath, whisperModelPath, whisperThreads, whisperLanguage, inputPath)
+
+		log.Printf("Download complete. Video saved at absolute path: %s\n", absPath)
+
+		// Verify file exists at the absolute path returned
+		if _, err := os.Stat(absPath); err != nil {
+			// Use %v for the error to see more detail (e.g., os.IsNotExist)
+			log.Fatalf("Downloaded video file not found or inaccessible at: %s. Error: %v\n", absPath, err)
+		}
+
+		log.Printf("File verified. Proceeding to process video: %s\n", absPath)
+
+		// Pass the verified absolute path to VideoSummary
+		err = VideoSummary(llm, apiKey, chunkDuration, whisperCLIPath, whisperModelPath, whisperThreads, whisperLanguage, absPath, "")
 		if err != nil {
-			return
+			log.Fatalf("Error in VideoSummary: %v\n", err)
+		}
+
+	} else if IsUrl(inputPath) == "path" {
+		// For direct file paths, ensure we have absolute path
+		absPath, err := filepath.Abs(inputPath)
+		if err != nil {
+			log.Fatalf("Error getting absolute path for input '%s': %v\n", inputPath, err)
+		}
+
+		// Verify the input file path
+		if _, err := os.Stat(absPath); err != nil {
+			log.Fatalf("Input video file not found or inaccessible at: %s. Error: %v\n", absPath, err)
+		}
+
+		fmt.Printf("Processing local video file: %s\n", absPath)
+		err = VideoSummary(llm, apiKey, chunkDuration, whisperCLIPath, whisperModelPath, whisperThreads, whisperLanguage, absPath, "")
+		if err != nil {
+			log.Fatalf("Error in VideoSummary: %v\n", err)
 		}
 	}
 }
-*/
 
-// isVideoFile function
-func isVideoFile(path string) bool {
+// IsVideoFile function
+func IsVideoFile(path string) bool {
 	ext := strings.ToLower(filepath.Ext(path))
 	videoExtensions := []string{".mp4", ".mov", ".avi", ".wmv", ".mkv", ".flv", ".webm", ".mpeg", ".mpg"}
 	for _, vext := range videoExtensions {
