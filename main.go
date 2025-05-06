@@ -314,15 +314,15 @@ func findDownloadedFile(stdout, tempDir string) (string, error) {
 }
 
 // SetLlmApi function
-func SetLlmApi(llm string, apiKey string) (*genai.Client, *genai.GenerativeModel, context.Context) {
+func SetLlmApi(llm string, apiKey string) (*genai.Client, *genai.GenerativeModel, context.Context, error) {
 	ctx := context.Background()
 	client, err := genai.NewClient(ctx, option.WithAPIKey(apiKey))
 	if err != nil {
-		log.Fatal(err)
+		return nil, nil, nil, fmt.Errorf("error creating genai client: %w", err)
 	}
 	model := client.GenerativeModel(llm)
 	fmt.Println("LLM API setup complete.")
-	return client, model, ctx
+	return client, model, ctx, nil
 }
 
 const (
@@ -736,7 +736,10 @@ func processChunk(chunkData ChunkData, client *genai.Client, model *genai.Genera
 func VideoSummary(llm string, apiKey string, chunkDuration int, whisperCLIPath string, whisperModelPath string, whisperThreads int, whisperLanguage string, inputPath string, inputFromUser string) error {
 	runtime.GOMAXPROCS(runtime.NumCPU())
 
-	client, model, ctx := SetLlmApi(llm, apiKey)
+	client, model, ctx, err := SetLlmApi(llm, apiKey)
+	if err != nil {
+		return err
+	}
 	defer client.Close()
 
 	errorChannel := make(chan error, 10) // Buffered channel
